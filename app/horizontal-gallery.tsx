@@ -26,6 +26,12 @@ const fragmentShader = `
   uniform float uParallax;
   uniform float uUvScale;
   uniform float uShaderMultiplier;
+  uniform float uTime;
+  uniform float uHoverProgress;
+  uniform vec2 uMousePosition;
+  uniform float uHoverDistortionStrength;
+  uniform float uGrainStrength;
+  uniform float uEffectRadius;
 
   vec2 coverUv(vec2 uv, vec2 resolution, vec2 imageResolution) {
     vec2 ratio = vec2(
@@ -38,13 +44,46 @@ const fragmentShader = `
     );
   }
 
+  float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+  }
+
+  float noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(
+      mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x),
+      mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x),
+      u.y
+    );
+  }
+
   void main() {
+    // Soft circular mask around the mouse position (aspect-corrected so it stays round)
+    vec2 maskUv = vUv - uMousePosition;
+    maskUv.x *= uResolution.x / uResolution.y;
+    float mask = (1.0 - smoothstep(uEffectRadius * 0.3, uEffectRadius, length(maskUv))) * uHoverProgress;
+
     vec2 uv = coverUv(vUv, uResolution, uImageResolution);
     uv.x += uParallax * uShaderMultiplier;
     uv -= 0.5;
     uv *= uUvScale;
     uv += 0.5;
+
+    // Local texture distortion, only where the hover mask is active
+    vec2 distortion = vec2(
+      noise(vUv * 6.0 + uTime * 0.4),
+      noise(vUv * 6.0 + 100.0 - uTime * 0.3)
+    ) - 0.5;
+    uv += distortion * uHoverDistortionStrength * mask;
+
     vec3 col = texture2D(uTexture, uv).rgb;
+
+    // Fine animated grain, only where the hover mask is active
+    float grain = hash(gl_FragCoord.xy + fract(uTime) * 100.0) - 0.5;
+    col += grain * uGrainStrength * mask;
+
     gl_FragColor = vec4(col, 1.0);
   }
 `;
@@ -56,6 +95,7 @@ type Media = {
   material: THREE.ShaderMaterial;
   texture: THREE.Texture;
   parallaxIntensity: number;
+  hoverTarget: number;
 };
 
 const clamp = (min: number, max: number, value: number) => gsap.utils.clamp(min, max, value);
@@ -96,7 +136,21 @@ export function HorizontalGallery({ images }: HorizontalGalleryProps) {
     const textureLoader = new THREE.TextureLoader();
     const medias: Media[] = [];
     const scroll = { current: 0, target: 0, ease: 0.07, limit: 0 };
-    const params = { parallaxIntensity: 0.4, uvScale: 0.85, shaderMultiplier: 1.0 };
+    const params = {
+      parallaxIntensity: 0.4,
+      uvScale: 0.85,
+      shaderMultiplier: 1.0,
+      hoverDistortionStrength: 0.06,
+      grainStrength: 0.08,
+      effectRadius: 0.45,
+      hoverTransitionSpeed: 0.08,
+    };
+    // Hover effects only on devices with a real pointer, and never under prefers-reduced-motion
+    const hoverEnabled =
+      window.matchMedia("(hover: hover) and (pointer: fine)").matches &&
+      !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const pointer = { x: 0, y: 0, active: false };
+    const clock = new THREE.Clock();
     let gui: GUI | null = null;
     let animationFrame = 0;
     let disposed = false;
@@ -128,6 +182,29 @@ export function HorizontalGallery({ images }: HorizontalGalleryProps) {
       }
     };
 
+    const updateMediaHover = (media: Media) => {
+      if (!hoverEnabled) return;
+      const left = media.bounds.left - scroll.current;
+      const top = media.bounds.top;
+      media.hoverTarget =
+        pointer.active &&
+        pointer.x >= left && pointer.x <= left + media.bounds.width &&
+        pointer.y >= top && pointer.y <= top + media.bounds.height
+          ? 1
+          : 0;
+      const progress = media.material.uniforms.uHoverProgress.value as number;
+      let next = lerp(progress, media.hoverTarget, params.hoverTransitionSpeed);
+      // Snap to exact 0/1 at the end so the resting state is the untouched original image
+      if (media.hoverTarget === 0 && next < 0.002) next = 0;
+      if (media.hoverTarget === 1 && next > 0.998) next = 1;
+      media.material.uniforms.uHoverProgress.value = next;
+      if (pointer.active) {
+        const mx = clamp(0, 1, (pointer.x - left) / media.bounds.width);
+        const my = clamp(0, 1, 1 - (pointer.y - top) / media.bounds.height);
+        media.material.uniforms.uMousePosition.value.set(mx, my);
+      }
+    };
+
     const onResize = () => {
       screen.width = window.innerWidth;
       screen.height = window.innerHeight;
@@ -144,12 +221,25 @@ export function HorizontalGallery({ images }: HorizontalGalleryProps) {
       scroll.target += event.deltaY;
     };
 
+    const onPointerMove = (event: PointerEvent) => {
+      pointer.x = event.clientX;
+      pointer.y = event.clientY;
+      pointer.active = true;
+    };
+
+    const onPointerLeave = () => {
+      pointer.active = false;
+    };
+
     const render = () => {
       scroll.target = clamp(0, scroll.limit, scroll.target);
       scroll.current = lerp(scroll.current, scroll.target, scroll.ease);
+      const time = clock.getElapsedTime();
       medias.forEach((media) => {
         updateMediaParallax(media);
         updateMediaPosition(media);
+        updateMediaHover(media);
+        media.material.uniforms.uTime.value = time;
       });
       renderer.render(scene, camera);
       animationFrame = requestAnimationFrame(render);
@@ -177,13 +267,19 @@ export function HorizontalGallery({ images }: HorizontalGalleryProps) {
             uParallax: { value: 0 },
             uUvScale: { value: params.uvScale },
             uShaderMultiplier: { value: params.shaderMultiplier },
+            uTime: { value: 0 },
+            uHoverProgress: { value: 0 },
+            uMousePosition: { value: new THREE.Vector2(0.5, 0.5) },
+            uHoverDistortionStrength: { value: params.hoverDistortionStrength },
+            uGrainStrength: { value: params.grainStrength },
+            uEffectRadius: { value: params.effectRadius },
           },
           vertexShader,
           fragmentShader,
         });
         const mesh = new THREE.Mesh(geometry, material);
         group.add(mesh);
-        const media: Media = { element, bounds, mesh, material, texture, parallaxIntensity: params.parallaxIntensity };
+        const media: Media = { element, bounds, mesh, material, texture, parallaxIntensity: params.parallaxIntensity, hoverTarget: 0 };
         medias.push(media);
         updateMediaScale(media);
       });
@@ -198,6 +294,16 @@ export function HorizontalGallery({ images }: HorizontalGalleryProps) {
       gui.add(params, "shaderMultiplier", 0, 2, 0.1).name("Shader Multiplier").onChange((value: number) => {
         medias.forEach((media) => { media.material.uniforms.uShaderMultiplier.value = value; });
       });
+      gui.add(params, "hoverDistortionStrength", 0, 0.2, 0.005).name("Hover Distortion Strength").onChange((value: number) => {
+        medias.forEach((media) => { media.material.uniforms.uHoverDistortionStrength.value = value; });
+      });
+      gui.add(params, "grainStrength", 0, 0.3, 0.005).name("Grain Strength").onChange((value: number) => {
+        medias.forEach((media) => { media.material.uniforms.uGrainStrength.value = value; });
+      });
+      gui.add(params, "effectRadius", 0.1, 1.0, 0.01).name("Effect Radius").onChange((value: number) => {
+        medias.forEach((media) => { media.material.uniforms.uEffectRadius.value = value; });
+      });
+      gui.add(params, "hoverTransitionSpeed", 0.02, 0.3, 0.01).name("Hover Transition Speed");
 
       setLimit();
       onResize();
@@ -207,6 +313,10 @@ export function HorizontalGallery({ images }: HorizontalGalleryProps) {
 
     window.addEventListener("resize", onResize);
     window.addEventListener("wheel", onWheel, { passive: true });
+    if (hoverEnabled) {
+      window.addEventListener("pointermove", onPointerMove, { passive: true });
+      document.documentElement.addEventListener("pointerleave", onPointerLeave);
+    }
     setup().catch(() => setFailed(true));
 
     return () => {
@@ -214,6 +324,10 @@ export function HorizontalGallery({ images }: HorizontalGalleryProps) {
       cancelAnimationFrame(animationFrame);
       window.removeEventListener("resize", onResize);
       window.removeEventListener("wheel", onWheel);
+      if (hoverEnabled) {
+        window.removeEventListener("pointermove", onPointerMove);
+        document.documentElement.removeEventListener("pointerleave", onPointerLeave);
+      }
       gui?.destroy();
       medias.forEach(({ material, texture }) => {
         material.dispose();
