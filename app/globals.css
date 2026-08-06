@@ -1,0 +1,140 @@
+@import "tailwindcss";
+
+*, *::after, *::before { box-sizing: border-box; }
+
+:root {
+  font-size: 12px;
+  --color-text: #fff;
+  --color-bg: #000;
+  --color-link: #fff;
+  --color-link-hover: #fff;
+  --page-padding: 1.5rem;
+}
+
+html, body { width: 100%; height: 100%; }
+
+body {
+  margin: 0;
+  color: var(--color-text);
+  background-color: var(--color-bg);
+  font-family: ui-monospace, monospace;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  width: 100%;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.loading-screen::before,
+.loading-screen::after {
+  content: "";
+  position: fixed;
+  z-index: 10000;
+}
+
+.loading-screen::before { inset: 0; background: var(--color-bg); }
+
+.loading-screen::after {
+  top: 50%;
+  left: 50%;
+  width: 100px;
+  height: 1px;
+  margin-left: -50px;
+  background: var(--color-link);
+  animation: loaderAnim 1.5s ease-in-out infinite alternate forwards;
+}
+
+@keyframes loaderAnim {
+  0% { transform: scaleX(0); transform-origin: 0% 50%; }
+  50% { transform: scaleX(1); transform-origin: 0% 50%; }
+  50.1% { transform: scaleX(1); transform-origin: 100% 50%; }
+  100% { transform: scaleX(0); transform-origin: 100% 50%; }
+}
+
+a { text-decoration: none; color: var(--color-link); outline: none; cursor: pointer; }
+a:hover { text-decoration: underline; color: var(--color-link-hover); }
+a:focus-visible { outline: 2px solid red; background: transparent; }
+
+.frame {
+  padding: 3rem var(--page-padding) 0;
+  display: grid;
+  z-index: 1000;
+  position: relative;
+  row-gap: 2rem;
+  column-gap: 2rem;
+  pointer-events: none;
+  justify-items: start;
+  grid-template-columns: auto auto auto 1fr;
+  grid-template-areas:
+    "title title title title"
+    "back archive github ."
+    "demos demos demos demos"
+    "tags tags tags tags";
+}
+
+.frame a, .frame button { pointer-events: auto; }
+.frame__title { grid-area: title; font-size: inherit; margin: 0; }
+.frame__back { grid-area: back; justify-self: start; }
+.frame__archive { grid-area: archive; justify-self: start; }
+.frame__github { grid-area: github; }
+.frame__tags { grid-area: tags; display: flex; flex-wrap: wrap; gap: 1rem; }
+.frame__demos { grid-area: demos; display: flex; flex-wrap: wrap; gap: 1rem; }
+
+.button { border: 1px solid #4c4c4c; padding: .5rem 1rem; border-radius: 2em; }
+a.button:hover, a.button:focus { border-color: #5c5c5c; text-decoration: none; color: #fff; }
+
+.content {
+  padding: var(--page-padding);
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  position: relative;
+}
+
+.gallery__wrapper__gl { position: relative; width: 100%; overflow: hidden; user-select: none; }
+.gallery__image__container__gl { display: flex; gap: 2rem; will-change: transform; height: 100%; }
+
+.gallery__media__gl {
+  flex-shrink: 0;
+  aspect-ratio: 4 / 3;
+  max-height: 60vh;
+  height: 60vh;
+  overflow: hidden;
+  position: relative;
+  display: block;
+}
+
+.gallery__media__image__gl {
+  position: absolute;
+  opacity: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+canvas { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+.webgl-error { position: fixed; z-index: 10001; inset: 50% auto auto 50%; transform: translate(-50%, -50%); }
+
+@media screen and (min-width: 53em) {
+  .frame {
+    padding: var(--page-padding);
+    height: 100%;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    grid-template-columns: auto auto auto auto 1fr;
+    grid-template-rows: auto auto 1fr;
+    align-content: start;
+    grid-template-areas:
+      "title back github archive ."
+      "demos demos demos . ."
+      "tags tags tags . .";
+  }
+
+  .frame__tags { align-self: end; }
+  .content { min-height: 100vh; justify-content: center; align-items: center; }
+}
