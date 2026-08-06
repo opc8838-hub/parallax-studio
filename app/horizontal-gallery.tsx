@@ -32,6 +32,7 @@ const fragmentShader = `
   uniform float uHoverDistortionStrength;
   uniform float uGrainStrength;
   uniform float uEffectRadius;
+  uniform float uEffectType;
 
   vec2 coverUv(vec2 uv, vec2 resolution, vec2 imageResolution) {
     vec2 ratio = vec2(
@@ -71,18 +72,66 @@ const fragmentShader = `
     uv *= uUvScale;
     uv += 0.5;
 
-    // Local texture distortion, only where the hover mask is active
-    vec2 distortion = vec2(
-      noise(vUv * 6.0 + uTime * 0.4),
-      noise(vUv * 6.0 + 100.0 - uTime * 0.3)
-    ) - 0.5;
-    uv += distortion * uHoverDistortionStrength * mask;
+    int effectType = int(uEffectType + 0.5);
+    float grainAmount = uGrainStrength;
+    vec3 col;
 
-    vec3 col = texture2D(uTexture, uv).rgb;
+    if (effectType == 1) {
+      // Chromatic aberration radiating from the cursor
+      vec2 dir = vUv - uMousePosition;
+      float amt = uHoverDistortionStrength * mask * 0.6;
+      col.r = texture2D(uTexture, uv + dir * amt).r;
+      col.g = texture2D(uTexture, uv).g;
+      col.b = texture2D(uTexture, uv - dir * amt).b;
+    } else if (effectType == 2) {
+      // Sine wave ripple
+      uv.x += sin(vUv.y * 30.0 + uTime * 1.6) * uHoverDistortionStrength * 0.35 * mask;
+      uv.y += sin(vUv.x * 24.0 - uTime * 1.2) * uHoverDistortionStrength * 0.25 * mask;
+      col = texture2D(uTexture, uv).rgb;
+    } else if (effectType == 3) {
+      // Large soft noise blobs
+      vec2 blob = vec2(
+        noise(vUv * 2.5 + uTime * 0.15),
+        noise(vUv * 2.5 + 50.0 - uTime * 0.12)
+      ) - 0.5;
+      uv += blob * uHoverDistortionStrength * 2.4 * mask;
+      col = texture2D(uTexture, uv).rgb;
+    } else if (effectType == 4) {
+      // Film grain dominant, barely any distortion
+      vec2 distortion = vec2(
+        noise(vUv * 6.0 + uTime * 0.4),
+        noise(vUv * 6.0 + 100.0 - uTime * 0.3)
+      ) - 0.5;
+      uv += distortion * uHoverDistortionStrength * 0.3 * mask;
+      col = texture2D(uTexture, uv).rgb;
+      grainAmount *= 2.6;
+    } else if (effectType == 5) {
+      // Mosaic pixelation around the cursor
+      vec2 px = 14.0 / uResolution;
+      vec2 mosaic = (floor(uv / px) + 0.5) * px;
+      col = texture2D(uTexture, mix(uv, mosaic, mask)).rgb;
+    } else if (effectType == 6) {
+      // Magnifying lens centered on the cursor
+      vec2 muv = coverUv(uMousePosition, uResolution, uImageResolution);
+      muv.x += uParallax * uShaderMultiplier;
+      muv -= 0.5;
+      muv *= uUvScale;
+      muv += 0.5;
+      uv = mix(uv, muv + (uv - muv) * 0.65, mask);
+      col = texture2D(uTexture, uv).rgb;
+    } else {
+      // Fine noise ripple distortion (default)
+      vec2 distortion = vec2(
+        noise(vUv * 6.0 + uTime * 0.4),
+        noise(vUv * 6.0 + 100.0 - uTime * 0.3)
+      ) - 0.5;
+      uv += distortion * uHoverDistortionStrength * mask;
+      col = texture2D(uTexture, uv).rgb;
+    }
 
     // Fine animated grain, only where the hover mask is active
     float grain = hash(gl_FragCoord.xy + fract(uTime) * 100.0) - 0.5;
-    col += grain * uGrainStrength * mask;
+    col += grain * grainAmount * mask;
 
     gl_FragColor = vec4(col, 1.0);
   }
@@ -254,7 +303,7 @@ export function HorizontalGallery({ images }: HorizontalGalleryProps) {
       })));
       if (disposed) return;
 
-      elements.forEach((element) => {
+      elements.forEach((element, index) => {
         const bounds = element.getBoundingClientRect();
         const texture = textureLoader.load(element.getAttribute("src") ?? "", (loadedTexture) => {
           material.uniforms.uImageResolution.value.set(loadedTexture.image.width, loadedTexture.image.height);
@@ -273,6 +322,9 @@ export function HorizontalGallery({ images }: HorizontalGalleryProps) {
             uHoverDistortionStrength: { value: params.hoverDistortionStrength },
             uGrainStrength: { value: params.grainStrength },
             uEffectRadius: { value: params.effectRadius },
+            // Each photo gets its own hover texture style: 0 noise ripple, 1 chromatic
+            // aberration, 2 sine wave, 3 soft blobs, 4 film grain, 5 mosaic, 6 lens
+            uEffectType: { value: index % 7 },
           },
           vertexShader,
           fragmentShader,
