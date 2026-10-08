@@ -1,427 +1,274 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import * as THREE from "three";
 import gsap from "gsap";
-import GUI from "lil-gui";
+import { fragmentShader, vertexShader } from "./gallery-shaders";
+import type { GalleryImage, GallerySettings } from "./gallery-project";
 
-type HorizontalGalleryProps = { images: string[] };
-
-const vertexShader = `
-  #define PI 3.1415926535897932384626433832795
-  precision highp float;
-  varying vec2 vUv;
-  void main() {
-    vUv = uv;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-  }
-`;
-
-const fragmentShader = `
-  precision highp float;
-  varying vec2 vUv;
-  uniform sampler2D uTexture;
-  uniform vec2 uResolution;
-  uniform vec2 uImageResolution;
-  uniform float uParallax;
-  uniform float uUvScale;
-  uniform float uShaderMultiplier;
-  uniform float uTime;
-  uniform float uHoverProgress;
-  uniform vec2 uMousePosition;
-  uniform float uHoverDistortionStrength;
-  uniform float uGrainStrength;
-  uniform float uEffectRadius;
-  uniform float uEffectType;
-
-  vec2 coverUv(vec2 uv, vec2 resolution, vec2 imageResolution) {
-    vec2 ratio = vec2(
-      min((resolution.x / resolution.y) / (imageResolution.x / imageResolution.y), 1.0),
-      min((resolution.y / resolution.x) / (imageResolution.y / imageResolution.x), 1.0)
-    );
-    return vec2(
-      uv.x * ratio.x + (1.0 - ratio.x) * 0.5,
-      uv.y * ratio.y + (1.0 - ratio.y) * 0.5
-    );
-  }
-
-  float hash(vec2 p) {
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
-  }
-
-  float noise(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    vec2 u = f * f * (3.0 - 2.0 * f);
-    return mix(
-      mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x),
-      mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x),
-      u.y
-    );
-  }
-
-  void main() {
-    // Soft circular mask around the mouse position (aspect-corrected so it stays round)
-    vec2 maskUv = vUv - uMousePosition;
-    maskUv.x *= uResolution.x / uResolution.y;
-    float mask = (1.0 - smoothstep(uEffectRadius * 0.3, uEffectRadius, length(maskUv))) * uHoverProgress;
-
-    vec2 uv = coverUv(vUv, uResolution, uImageResolution);
-    uv.x += uParallax * uShaderMultiplier;
-    uv -= 0.5;
-    uv *= uUvScale;
-    uv += 0.5;
-
-    int effectType = int(uEffectType + 0.5);
-    float grainAmount = uGrainStrength;
-    vec3 col;
-
-    if (effectType == 1) {
-      // Chromatic aberration radiating from the cursor
-      vec2 dir = vUv - uMousePosition;
-      float amt = uHoverDistortionStrength * mask * 0.6;
-      col.r = texture2D(uTexture, uv + dir * amt).r;
-      col.g = texture2D(uTexture, uv).g;
-      col.b = texture2D(uTexture, uv - dir * amt).b;
-    } else if (effectType == 2) {
-      // Sine wave ripple
-      uv.x += sin(vUv.y * 30.0 + uTime * 1.6) * uHoverDistortionStrength * 0.35 * mask;
-      uv.y += sin(vUv.x * 24.0 - uTime * 1.2) * uHoverDistortionStrength * 0.25 * mask;
-      col = texture2D(uTexture, uv).rgb;
-    } else if (effectType == 3) {
-      // Large soft noise blobs
-      vec2 blob = vec2(
-        noise(vUv * 2.5 + uTime * 0.15),
-        noise(vUv * 2.5 + 50.0 - uTime * 0.12)
-      ) - 0.5;
-      uv += blob * uHoverDistortionStrength * 2.4 * mask;
-      col = texture2D(uTexture, uv).rgb;
-    } else if (effectType == 4) {
-      // Film grain dominant, barely any distortion
-      vec2 distortion = vec2(
-        noise(vUv * 6.0 + uTime * 0.4),
-        noise(vUv * 6.0 + 100.0 - uTime * 0.3)
-      ) - 0.5;
-      uv += distortion * uHoverDistortionStrength * 0.3 * mask;
-      col = texture2D(uTexture, uv).rgb;
-      grainAmount *= 2.6;
-    } else if (effectType == 5) {
-      // Mosaic pixelation around the cursor
-      vec2 px = 14.0 / uResolution;
-      vec2 mosaic = (floor(uv / px) + 0.5) * px;
-      col = texture2D(uTexture, mix(uv, mosaic, mask)).rgb;
-    } else if (effectType == 6) {
-      // Magnifying lens centered on the cursor
-      vec2 muv = coverUv(uMousePosition, uResolution, uImageResolution);
-      muv.x += uParallax * uShaderMultiplier;
-      muv -= 0.5;
-      muv *= uUvScale;
-      muv += 0.5;
-      uv = mix(uv, muv + (uv - muv) * 0.65, mask);
-      col = texture2D(uTexture, uv).rgb;
-    } else {
-      // Fine noise ripple distortion (default)
-      vec2 distortion = vec2(
-        noise(vUv * 6.0 + uTime * 0.4),
-        noise(vUv * 6.0 + 100.0 - uTime * 0.3)
-      ) - 0.5;
-      uv += distortion * uHoverDistortionStrength * mask;
-      col = texture2D(uTexture, uv).rgb;
-    }
-
-    // Fine animated grain, only where the hover mask is active
-    float grain = hash(gl_FragCoord.xy + fract(uTime) * 100.0) - 0.5;
-    col += grain * grainAmount * mask;
-
-    gl_FragColor = vec4(col, 1.0);
-  }
-`;
-
-type Media = {
-  element: HTMLImageElement;
-  bounds: DOMRect;
-  mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
-  material: THREE.ShaderMaterial;
-  texture: THREE.Texture;
-  parallaxIntensity: number;
-  hoverTarget: number;
+type Props = {
+  images: GalleryImage[];
+  settings: GallerySettings;
+  focusId: string | null;
+  onSelect: (id: string) => void;
 };
 
-const clamp = (min: number, max: number, value: number) => gsap.utils.clamp(min, max, value);
-const lerp = (start: number, end: number, amount: number) => gsap.utils.interpolate(start, end, amount);
-
-export function HorizontalGallery({ images }: HorizontalGalleryProps) {
+export function HorizontalGallery({ images, settings, focusId, onSelect }: Props) {
+  const stageRef = useRef<HTMLDivElement>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const wrapperRef = useRef<HTMLDivElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [loaded, setLoaded] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const liveRef = useRef({ images, settings, onSelect });
+  const seekRef = useRef<(id: string) => void>(() => {});
+  const redrawRef = useRef<() => void>(() => {});
+  const [status, setStatus] = useState<"loading" | "ready" | "fallback">("loading");
+  const [progress, setProgress] = useState(0);
+  const [motionReduced, setMotionReduced] = useState(false);
+  const imageKey = JSON.stringify(images.map(image => [image.id, image.src]));
+
+  useEffect(() => { liveRef.current = { images, settings, onSelect }; redrawRef.current(); }, [images, settings, onSelect]);
+  useEffect(() => { if (focusId) seekRef.current(focusId); }, [focusId]);
 
   useEffect(() => {
+    const stage = stageRef.current;
+    const track = trackRef.current;
     const canvas = canvasRef.current;
-    const wrapper = wrapperRef.current;
-    const container = containerRef.current;
-    if (!canvas || !wrapper || !container) return;
-
-    let renderer: THREE.WebGLRenderer;
-    try {
-      renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-    } catch {
-      setFailed(true);
-      return;
-    }
-
-    const screen = { width: window.innerWidth, height: window.innerHeight };
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setSize(screen.width, screen.height);
-
-    const scene = new THREE.Scene();
-    const group = new THREE.Group();
-    scene.add(group);
-    const fov = 2 * Math.atan(screen.height / 2 / 100) * (180 / Math.PI);
-    const camera = new THREE.PerspectiveCamera(fov, screen.width / screen.height, 0.01, 1000);
-    camera.position.set(0, 0, 100);
-    const geometry = new THREE.PlaneGeometry(1, 1, 32, 32);
-    const textureLoader = new THREE.TextureLoader();
-    const medias: Media[] = [];
-    const scroll = { current: 0, target: 0, ease: 0.07, limit: 0 };
-    const params = {
-      parallaxIntensity: 0.4,
-      uvScale: 0.85,
-      shaderMultiplier: 1.0,
-      hoverDistortionStrength: 0.06,
-      grainStrength: 0.08,
-      effectRadius: 0.45,
-      hoverTransitionSpeed: 0.08,
-    };
-    // Hover effects only on devices with a real pointer, and never under prefers-reduced-motion
-    const hoverEnabled =
-      window.matchMedia("(hover: hover) and (pointer: fine)").matches &&
-      !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const pointer = { x: 0, y: 0, active: false };
-    const clock = new THREE.Clock();
-    let gui: GUI | null = null;
-    let animationFrame = 0;
+    if (!stage || !track || !canvas) return;
     let disposed = false;
-
-    const setLimit = () => {
-      scroll.limit = container.scrollWidth - wrapper.clientWidth;
+    let initialized = false;
+    let animationFrame = 0;
+    let renderer: THREE.WebGLRenderer | null = null;
+    const scene = new THREE.Scene();
+    const camera = new THREE.OrthographicCamera(0, 1, 1, 0, 0.1, 1000);
+    camera.position.z = 10;
+    const geometry = new THREE.PlaneGeometry(1, 1);
+    const loader = new THREE.TextureLoader();
+    type Media = { element: HTMLElement; image: HTMLImageElement; left: number; top: number;
+      width: number; height: number; material: THREE.ShaderMaterial | null;
+      mesh: THREE.Mesh | null; texture: THREE.Texture | null; progress: number };
+    const media: Media[] = [];
+    const scroll = { current: 0, target: 0, limit: 0 };
+    const pointer = { x: 0, y: 0, active: false, down: false, startX: 0, startTarget: 0, moved: false };
+    const reducedQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let reduced = reducedQuery.matches;
+    const clock = new THREE.Clock();
+    let lastProgress = -1;
+    const schedule = () => {
+      if (initialized && !disposed && !animationFrame) animationFrame = requestAnimationFrame(render);
     };
+    redrawRef.current = schedule;
 
-    const updateMediaScale = (media: Media) => {
-      media.bounds = media.element.getBoundingClientRect();
-      media.mesh.scale.set(media.bounds.width, media.bounds.height, 1);
-      media.material.uniforms.uResolution.value.set(media.bounds.width, media.bounds.height);
-    };
+    if (settings.mode === "webgl") {
+      try {
+        renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      } catch { /* DOM gallery remains usable when WebGL is unavailable. */ }
+    }
+    const gl = renderer;
+    stage.dataset.renderer = gl ? "webgl" : "dom";
 
-    const updateMediaPosition = (media: Media) => {
-      const x = media.bounds.left - scroll.current - screen.width / 2 + media.bounds.width / 2;
-      const y = -media.bounds.top + screen.height / 2 - media.bounds.height / 2;
-      media.mesh.position.set(x, y, 0);
-    };
-
-    const updateMediaParallax = (media: Media) => {
-      const elementLeft = media.bounds.left - scroll.current;
-      const elementRight = elementLeft + media.bounds.width;
-      if (elementRight >= 0 && elementLeft <= window.innerWidth) {
-        const elementCenter = elementLeft + media.bounds.width / 2;
-        const viewportCenter = window.innerWidth / 2;
-        const distance = (elementCenter - viewportCenter) / window.innerWidth;
-        media.material.uniforms.uParallax.value = distance * media.parallaxIntensity;
-      }
-    };
-
-    const updateMediaHover = (media: Media) => {
-      if (!hoverEnabled) return;
-      const left = media.bounds.left - scroll.current;
-      const top = media.bounds.top;
-      media.hoverTarget =
-        pointer.active &&
-        pointer.x >= left && pointer.x <= left + media.bounds.width &&
-        pointer.y >= top && pointer.y <= top + media.bounds.height
-          ? 1
-          : 0;
-      const progress = media.material.uniforms.uHoverProgress.value as number;
-      let next = lerp(progress, media.hoverTarget, params.hoverTransitionSpeed);
-      // Snap to exact 0/1 at the end so the resting state is the untouched original image
-      if (media.hoverTarget === 0 && next < 0.002) next = 0;
-      if (media.hoverTarget === 1 && next > 0.998) next = 1;
-      media.material.uniforms.uHoverProgress.value = next;
-      if (pointer.active) {
-        const mx = clamp(0, 1, (pointer.x - left) / media.bounds.width);
-        const my = clamp(0, 1, 1 - (pointer.y - top) / media.bounds.height);
-        media.material.uniforms.uMousePosition.value.set(mx, my);
-      }
-    };
-
-    const onResize = () => {
-      screen.width = window.innerWidth;
-      screen.height = window.innerHeight;
-      camera.aspect = screen.width / screen.height;
-      camera.fov = 2 * Math.atan(screen.height / 2 / 100) * (180 / Math.PI);
+    const measure = () => {
+      const width = stage.clientWidth;
+      const height = stage.clientHeight;
+      camera.left = -width / 2; camera.right = width / 2;
+      camera.top = height / 2; camera.bottom = -height / 2;
       camera.updateProjectionMatrix();
-      renderer.setSize(screen.width, screen.height);
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-      medias.forEach(updateMediaScale);
-      setLimit();
+      gl?.setSize(width, height, false);
+      for (const item of media) {
+        item.left = item.element.offsetLeft;
+        item.top = item.element.offsetTop + track.offsetTop;
+        item.width = item.element.offsetWidth;
+        item.height = item.element.offsetHeight;
+        item.mesh?.scale.set(item.width, item.height, 1);
+        item.material?.uniforms.uResolution.value.set(item.width, item.height);
+      }
+      scroll.limit = Math.max(0, track.scrollWidth - width + 40);
+      scroll.target = Math.min(scroll.target, scroll.limit);
+      scroll.current = Math.min(scroll.current, scroll.limit);
+      schedule();
     };
+    const seek = (id: string) => {
+      const index = liveRef.current.images.findIndex(image => image.id === id);
+      const item = media[index];
+      if (item) scroll.target = gsap.utils.clamp(0, scroll.limit, item.left + item.width / 2 - stage.clientWidth / 2);
+      schedule();
+    };
+    seekRef.current = seek;
 
     const onWheel = (event: WheelEvent) => {
-      scroll.target += event.deltaY;
+      event.preventDefault();
+      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? stage.clientWidth : 1;
+      scroll.target += (Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY) * unit;
+      schedule();
     };
-
     const onPointerMove = (event: PointerEvent) => {
-      pointer.x = event.clientX;
-      pointer.y = event.clientY;
+      const rect = stage.getBoundingClientRect();
+      pointer.x = event.clientX - rect.left;
+      pointer.y = event.clientY - rect.top;
       pointer.active = true;
+      if (pointer.down) {
+        const delta = event.clientX - pointer.startX;
+        if (Math.abs(delta) > 5) pointer.moved = true;
+        scroll.target = pointer.startTarget - delta;
+      }
+      schedule();
     };
-
-    const onPointerLeave = () => {
-      pointer.active = false;
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.button !== 0) return;
+      pointer.down = true; pointer.moved = false;
+      pointer.startX = event.clientX; pointer.startTarget = scroll.target;
+      stage.setPointerCapture(event.pointerId);
+      stage.dataset.dragging = "true";
+      onPointerMove(event);
     };
+    const onPointerUp = (event: PointerEvent) => {
+      if (!pointer.down) return;
+      pointer.down = false;
+      stage.dataset.dragging = "false";
+      if (!pointer.moved) {
+        const index = media.findIndex(item => pointer.x >= item.left - scroll.current &&
+          pointer.x <= item.left - scroll.current + item.width && pointer.y >= item.top && pointer.y <= item.top + item.height);
+        if (index >= 0) liveRef.current.onSelect(liveRef.current.images[index].id);
+      }
+      if (event.pointerType === "touch") pointer.active = false;
+      schedule();
+    };
+    const onPointerLeave = () => { if (!pointer.down) pointer.active = false; schedule(); };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+        event.preventDefault(); scroll.target += (event.key === "ArrowRight" ? 1 : -1) * stage.clientWidth * 0.65;
+      } else if (event.key === "Home") { event.preventDefault(); scroll.target = 0; }
+      else if (event.key === "End") { event.preventDefault(); scroll.target = scroll.limit; }
+      schedule();
+    };
+    const onMotionChange = () => { reduced = reducedQuery.matches; setMotionReduced(reduced); schedule(); };
+    onMotionChange();
 
     const render = () => {
-      scroll.target = clamp(0, scroll.limit, scroll.target);
-      scroll.current = lerp(scroll.current, scroll.target, scroll.ease);
+      animationFrame = 0;
+      const p = liveRef.current.settings;
+      scroll.target = gsap.utils.clamp(0, scroll.limit, scroll.target);
+      scroll.current = reduced ? scroll.target : gsap.utils.interpolate(scroll.current, scroll.target, p.scrollEase);
+      if (Math.abs(scroll.current - scroll.target) < 0.01) scroll.current = scroll.target;
+      let moving = Math.abs(scroll.current - scroll.target) > 0.01 || pointer.down;
       const time = clock.getElapsedTime();
-      medias.forEach((media) => {
-        updateMediaParallax(media);
-        updateMediaPosition(media);
-        updateMediaHover(media);
-        media.material.uniforms.uTime.value = time;
+      track.style.transform = `translate3d(${-scroll.current}px, 0, 0)`;
+      media.forEach((item, i) => {
+        const left = item.left - scroll.current;
+        const distance = (left + item.width / 2 - stage.clientWidth / 2) / stage.clientWidth;
+        const hovered = Boolean(gl) && (liveRef.current.images[i]?.effect ?? -1) >= 0 && !reduced && pointer.active && pointer.x >= left && pointer.x <= left + item.width &&
+          pointer.y >= item.top && pointer.y <= item.top + item.height;
+        item.progress = gsap.utils.interpolate(item.progress, hovered ? 1 : 0, p.hoverTransitionSpeed);
+        if (item.progress < 0.002) item.progress = 0;
+        if (hovered || item.progress > 0) moving = true;
+        if (item.material && item.mesh) {
+          const u = item.material.uniforms;
+          item.mesh.position.set(left + item.width / 2 - stage.clientWidth / 2, stage.clientHeight / 2 - item.top - item.height / 2, 0);
+          item.mesh.visible = left + item.width >= 0 && left <= stage.clientWidth;
+          u.uParallax.value = reduced ? 0 : distance * p.parallaxIntensity;
+          u.uUvScale.value = p.uvScale; u.uShaderMultiplier.value = p.shaderMultiplier;
+          u.uHoverDistortionStrength.value = p.hoverDistortionStrength;
+          u.uGrainStrength.value = p.grainStrength; u.uEffectRadius.value = p.effectRadius;
+          u.uHoverProgress.value = item.progress; u.uTime.value = time;
+          u.uEffectType.value = liveRef.current.images[i]?.effect ?? -1;
+          u.uMousePosition.value.set(gsap.utils.clamp(0, 1, (pointer.x - left) / item.width),
+            gsap.utils.clamp(0, 1, 1 - (pointer.y - item.top) / item.height));
+        } else {
+          // Translate within the oversized image, matching the original DOM gallery.
+          const scale = 1 / p.uvScale;
+          const maxShift = (scale - 1) * item.width / 2;
+          const shift = reduced ? 0 : gsap.utils.clamp(-maxShift, maxShift, -distance * item.width * p.parallaxIntensity * p.shaderMultiplier);
+          item.image.style.transform = `translate3d(${shift}px, 0, 0) scale(${scale})`;
+        }
       });
-      renderer.render(scene, camera);
-      animationFrame = requestAnimationFrame(render);
+      gl?.render(scene, camera);
+      const percent = Math.round((scroll.limit ? scroll.current / scroll.limit : 0) * 100);
+      if (percent !== lastProgress) { lastProgress = percent; setProgress(percent); }
+      if (moving) schedule();
     };
 
+    const observer = new ResizeObserver(measure);
     const setup = async () => {
-      const elements = Array.from(container.querySelectorAll<HTMLImageElement>(".gallery__media__image__gl"));
-      await Promise.all(elements.map((element) => new Promise<void>((resolve) => {
-        if (element.complete) return resolve();
-        element.addEventListener("load", () => resolve(), { once: true });
-        element.addEventListener("error", () => resolve(), { once: true });
-      })));
+      const elements = Array.from(track.querySelectorAll<HTMLElement>(".gallery-frame"));
+      await Promise.all(elements.map(async element => {
+        const image = element.querySelector("img")!;
+        try { await image.decode(); } catch { /* Keep a visible fallback for a broken image. */ }
+        if (disposed) return;
+        let texture: THREE.Texture | null = null;
+        let material: THREE.ShaderMaterial | null = null;
+        let mesh: THREE.Mesh | null = null;
+        if (gl && image.naturalWidth) {
+          texture = await loader.loadAsync(image.src);
+          if (disposed) { texture.dispose(); return; }
+          material = new THREE.ShaderMaterial({ vertexShader, fragmentShader, uniforms: {
+            uTexture: { value: texture }, uResolution: { value: new THREE.Vector2(1, 1) },
+            uImageResolution: { value: new THREE.Vector2(image.naturalWidth, image.naturalHeight) },
+            uParallax: { value: 0 }, uUvScale: { value: settings.uvScale }, uShaderMultiplier: { value: 1 },
+            uTime: { value: 0 }, uHoverProgress: { value: 0 }, uMousePosition: { value: new THREE.Vector2(0.5, 0.5) },
+            uHoverDistortionStrength: { value: 0.06 }, uGrainStrength: { value: 0.08 },
+            uEffectRadius: { value: 0.45 }, uEffectType: { value: -1 },
+          } });
+          mesh = new THREE.Mesh(geometry, material); scene.add(mesh);
+        }
+        media.push({ element, image, left: 0, top: 0, width: 0, height: 0, texture, material, mesh, progress: 0 });
+      }));
       if (disposed) return;
-
-      elements.forEach((element, index) => {
-        const bounds = element.getBoundingClientRect();
-        const texture = textureLoader.load(element.getAttribute("src") ?? "", (loadedTexture) => {
-          material.uniforms.uImageResolution.value.set(loadedTexture.image.width, loadedTexture.image.height);
-        });
-        const material = new THREE.ShaderMaterial({
-          uniforms: {
-            uTexture: { value: texture },
-            uResolution: { value: new THREE.Vector2(bounds.width || 1, bounds.height || 1) },
-            uImageResolution: { value: new THREE.Vector2(1, 1) },
-            uParallax: { value: 0 },
-            uUvScale: { value: params.uvScale },
-            uShaderMultiplier: { value: params.shaderMultiplier },
-            uTime: { value: 0 },
-            uHoverProgress: { value: 0 },
-            uMousePosition: { value: new THREE.Vector2(0.5, 0.5) },
-            uHoverDistortionStrength: { value: params.hoverDistortionStrength },
-            uGrainStrength: { value: params.grainStrength },
-            uEffectRadius: { value: params.effectRadius },
-            // Each photo gets its own hover texture style: 0 noise ripple, 1 chromatic
-            // aberration, 2 sine wave, 3 soft blobs, 4 film grain, 5 mosaic, 6 lens
-            uEffectType: { value: index % 7 },
-          },
-          vertexShader,
-          fragmentShader,
-        });
-        const mesh = new THREE.Mesh(geometry, material);
-        group.add(mesh);
-        const media: Media = { element, bounds, mesh, material, texture, parallaxIntensity: params.parallaxIntensity, hoverTarget: 0 };
-        medias.push(media);
-        updateMediaScale(media);
-      });
-
-      gui = new GUI();
-      gui.add(params, "parallaxIntensity", 0, 1, 0.01).name("Parallax Intensity").onChange((value: number) => {
-        medias.forEach((media) => { media.parallaxIntensity = value; });
-      });
-      gui.add(params, "uvScale", 0.7, 1.0, 0.01).name("UV Scale (Buffer)").onChange((value: number) => {
-        medias.forEach((media) => { media.material.uniforms.uUvScale.value = value; });
-      });
-      gui.add(params, "shaderMultiplier", 0, 2, 0.1).name("Shader Multiplier").onChange((value: number) => {
-        medias.forEach((media) => { media.material.uniforms.uShaderMultiplier.value = value; });
-      });
-      gui.add(params, "hoverDistortionStrength", 0, 0.2, 0.005).name("Hover Distortion Strength").onChange((value: number) => {
-        medias.forEach((media) => { media.material.uniforms.uHoverDistortionStrength.value = value; });
-      });
-      gui.add(params, "grainStrength", 0, 0.3, 0.005).name("Grain Strength").onChange((value: number) => {
-        medias.forEach((media) => { media.material.uniforms.uGrainStrength.value = value; });
-      });
-      gui.add(params, "effectRadius", 0.1, 1.0, 0.01).name("Effect Radius").onChange((value: number) => {
-        medias.forEach((media) => { media.material.uniforms.uEffectRadius.value = value; });
-      });
-      gui.add(params, "hoverTransitionSpeed", 0.02, 0.3, 0.01).name("Hover Transition Speed");
-
-      setLimit();
-      onResize();
-      setLoaded(true);
-      animationFrame = requestAnimationFrame(render);
+      // Texture downloads can finish in any order; frame indices must follow the project.
+      media.sort((a, b) => elements.indexOf(a.element) - elements.indexOf(b.element));
+      elements.forEach(element => observer.observe(element));
+      measure();
+      stage.dataset.ready = "true";
+      setStatus(gl || settings.mode === "dom" ? "ready" : "fallback");
+      initialized = true;
+      render();
     };
-
-    window.addEventListener("resize", onResize);
-    window.addEventListener("wheel", onWheel, { passive: true });
-    if (hoverEnabled) {
-      window.addEventListener("pointermove", onPointerMove, { passive: true });
-      document.documentElement.addEventListener("pointerleave", onPointerLeave);
-    }
-    setup().catch(() => setFailed(true));
-
+    setStatus("loading");
+    stage.dataset.ready = "false";
+    setup().catch(() => {
+      if (disposed) return;
+      stage.dataset.renderer = "dom";
+      setStatus("fallback");
+    });
+    observer.observe(stage); observer.observe(track);
+    stage.addEventListener("wheel", onWheel, { passive: false });
+    stage.addEventListener("pointermove", onPointerMove);
+    stage.addEventListener("pointerdown", onPointerDown);
+    stage.addEventListener("pointerup", onPointerUp);
+    stage.addEventListener("pointercancel", onPointerUp);
+    stage.addEventListener("pointerleave", onPointerLeave);
+    stage.addEventListener("keydown", onKeyDown);
+    reducedQuery.addEventListener("change", onMotionChange);
     return () => {
-      disposed = true;
-      cancelAnimationFrame(animationFrame);
-      window.removeEventListener("resize", onResize);
-      window.removeEventListener("wheel", onWheel);
-      if (hoverEnabled) {
-        window.removeEventListener("pointermove", onPointerMove);
-        document.documentElement.removeEventListener("pointerleave", onPointerLeave);
-      }
-      gui?.destroy();
-      medias.forEach(({ material, texture }) => {
-        material.dispose();
-        texture.dispose();
-      });
-      geometry.dispose();
-      renderer.dispose();
+      disposed = true; cancelAnimationFrame(animationFrame); observer.disconnect();
+      seekRef.current = () => {};
+      redrawRef.current = () => {};
+      stage.removeEventListener("wheel", onWheel); stage.removeEventListener("pointermove", onPointerMove);
+      stage.removeEventListener("pointerdown", onPointerDown); stage.removeEventListener("pointerup", onPointerUp);
+      stage.removeEventListener("pointercancel", onPointerUp); stage.removeEventListener("pointerleave", onPointerLeave);
+      stage.removeEventListener("keydown", onKeyDown); reducedQuery.removeEventListener("change", onMotionChange);
+      media.forEach(item => { item.material?.dispose(); item.texture?.dispose(); item.image.style.transform = ""; });
+      geometry.dispose(); gl?.dispose(); track.style.transform = "";
     };
-  }, [images]);
+    // Only new image sources or a render-mode change require a new renderer.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imageKey, settings.mode]);
 
-  return (
-    <main>
-      <header className="frame">
-        <h1 className="frame__title">Horizontal Parallax Gallery (WebGL)</h1>
-        <a className="frame__back" href="https://tympanus.net/codrops/2026/02/19/creating-a-smooth-horizontal-parallax-gallery-from-dom-to-webgl/">Tutorial</a>
-        <a className="frame__archive" href="https://tympanus.net/codrops/hub/">All demos</a>
-        <a className="frame__github" href="https://github.com/davidfaure/horizontal-parallax-gallery-codrops">GitHub</a>
-        <nav className="frame__tags" aria-label="Tags">
-          <a href="https://tympanus.net/codrops/demos/?tag=scroll">#scroll</a>
-          <a href="https://tympanus.net/codrops/demos/?tag=three-js">#three.js</a>
-          <a href="https://tympanus.net/codrops/demos/?tag=webgl">#webgl</a>
-        </nav>
-        <nav className="frame__demos" aria-label="Demo version">
-          <a className="button" href="https://tympanus.net/Tutorials/HorizontalParallaxGallery/index.html">2D/DOM Version</a>
-        </nav>
-      </header>
-
-      <div className="content">
-        <div ref={wrapperRef} className="gallery__wrapper__gl">
-          <div ref={containerRef} className="gallery__image__container__gl">
-            {images.map((src, index) => (
-              <picture className="gallery__media__gl" key={src}>
-                <img src={src} alt={`Xian portrait ${index + 1}`} className="gallery__media__image__gl" draggable={false} />
-              </picture>
-            ))}
-          </div>
-        </div>
+  const style = { "--frame-height": `${settings.height}%`, "--frame-aspect": settings.aspect,
+    "--gallery-gap": `${settings.gap}px`, background: settings.background } as CSSProperties;
+  return <div className="gallery-preview">
+    <div ref={stageRef} className="gallery-stage" style={style} tabIndex={0} role="region" aria-label="画廊预览，用滚轮、拖动或左右方向键浏览">
+      <div ref={trackRef} className="gallery-track">
+        {images.map((image, index) => <div className="gallery-frame" key={image.id}>
+          <img src={image.src} alt={image.name} draggable={false} />
+          <span className="gallery-caption">{String(index + 1).padStart(2, "0")}<span>{image.name}</span></span>
+        </div>)}
       </div>
-
-      <canvas ref={canvasRef} aria-label="Horizontal WebGL gallery of seven Xian portraits" />
-      {!loaded && !failed && <div className="loading-screen" aria-label="Loading" />}
-      {failed && <p className="webgl-error">WebGL is unavailable in this browser.</p>}
-    </main>
-  );
+      <canvas ref={canvasRef} aria-label="WebGL 画廊效果" />
+      {!images.length && <div className="stage-empty"><span>你的画廊，从第一张图片开始。</span><small>点击「上传图片」，或把图片拖到编辑面板。</small></div>}
+      {status === "loading" && images.length > 0 && <div className="stage-loading" role="status">正在准备图片…</div>}
+      {status === "fallback" && <div className="stage-notice">WebGL 未能加载，正在显示普通图片。可切换到 2D 视差继续编辑。</div>}
+      {motionReduced && <div className="stage-notice">系统已开启减少动态效果；悬停动画已关闭。</div>}
+    </div>
+    <div className="preview-bottom"><span>滚轮浏览 <b>·</b> 拖动切换 <b>·</b> 悬停查看效果</span><span>{String(progress).padStart(2, "0")} / 100</span></div>
+    <div className="preview-progress"><span style={{ width: `${progress}%` }} /></div>
+  </div>;
 }
