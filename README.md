@@ -2,7 +2,7 @@
 
 可直接上传图片的中文画廊编辑网站，基于 Xian Horizontal Parallax Gallery 改造。
 
-在线编辑：https://opc8838-hub.github.io/xiaoguo-/
+在线编辑：https://opc8838-hub.github.io/parallax-studio/
 
 ## 使用
 

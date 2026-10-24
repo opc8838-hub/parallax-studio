@@ -3,9 +3,9 @@ import test from "node:test";
 import { createProject, parseProject } from "../app/gallery-project.ts";
 
 test("default samples resolve under the GitHub Pages repository path", () => {
-  const project = createProject("/xiaoguo-/");
+  const project = createProject("/parallax-studio/");
   assert.equal(project.images.length, 7);
-  assert.equal(project.images[0].src, "/xiaoguo-/gallery/01.png");
+  assert.equal(project.images[0].src, "/parallax-studio/gallery/01.png");
   assert.deepEqual(parseProject(JSON.parse(JSON.stringify(project))), project);
 });
 

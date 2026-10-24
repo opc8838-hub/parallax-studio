@@ -13,7 +13,7 @@ test("published editor has Chinese metadata and reachable bundled assets", async
   const css = html.match(/href="(\/xiaoguo-\/assets\/[^"]+\.css)"/);
   assert.ok(script, "script must use the Pages subpath");
   assert.ok(css, "stylesheet must use the Pages subpath");
-  await Promise.all([script[1], css[1]].map(path => access(new URL(path.replace("/xiaoguo-/", ""), root))));
+  await Promise.all([script[1], css[1]].map(path => access(new URL(path.replace("/parallax-studio/", ""), root))));
   await access(new URL("gallery/01.png", root));
   await access(new URL("gallery/neon-1.webp", root));
 });
